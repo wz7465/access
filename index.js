@@ -60,6 +60,7 @@ if (!fs.existsSync(DATA_DIR)) {
 let urls = [];
 let scheduledUrls = [];
 let accessLogs = [];
+const nextRunAt = new Map();
 
 // 旧版2分钟模式type为'24h'，统一迁移为'24h_2m'
 function normalizeType(type) {
@@ -113,7 +114,6 @@ function loadData() {
       scheduledUrls = (urlData.scheduledUrls || []).map(u => ({ ...u, type: normalizeType(u.type) }));
       console.log(`加载了 ${urls.length} 个24小时URL和 ${scheduledUrls.length} 个定时URL`);
     } else {
-      // 首次启动不预置任何示例网站，由用户自行添加。
       urls = [];
       scheduledUrls = [];
       saveUrlsData();
@@ -126,7 +126,6 @@ function loadData() {
     }
   } catch (error) {
     console.error('加载数据失败:', error.message);
-    // 数据文件读取失败时也不自动填充示例网站。
     urls = [];
     scheduledUrls = [];
     accessLogs = [];
@@ -135,6 +134,10 @@ function loadData() {
 
 function saveUrlsData() {
   try {
+    for (const item of [...urls, ...scheduledUrls]) {
+      const scheduled = nextRunAt && nextRunAt.get(String(item.id));
+      if (scheduled) item.nextRunAt = scheduled;
+    }
     const data = {
       urls: urls,
       scheduledUrls: scheduledUrls,
@@ -302,85 +305,86 @@ async function visitWebsite(url, type) {
 }
 
 const MODE_LABELS = {
-  '24h_2m': '24小时访问(每2分钟)',
-  '24h_5m': '24小时访问(每5分钟)',
-  '24h_10m': '24小时访问(每10分钟)',
-  '24h_30m': '24小时访问(每30分钟)',
-  '24h_1h': '24小时访问(每1小时)',
-  'scheduled': '定时访问(每2分钟,1:00-6:00暂停)'
+  'random': '全天随机访问'
 };
 
 function is24hType(type) {
-  return type === '24h' || type.startsWith('24h_');
+  return true; // 兼容旧数据：所有网站统一使用全天随机调度
 }
 
 function getModeLabel(type) {
-  return MODE_LABELS[type] || type;
+  return '随机访问（最大 ' + (Number(type && type.maxIntervalMinutes) || 10) + ' 分钟）';
 }
 
-const MODE_CRONS = {
-  '24h_2m': '*/2 * * * *',
-  '24h_5m': '*/5 * * * *',
-  '24h_10m': '*/10 * * * *',
-  '24h_30m': '*/30 * * * *',
-  '24h_1h': '0 * * * *'
-};
-
-Object.entries(MODE_CRONS).forEach(([type, expr]) => {
-  cron.schedule(expr, () => {
-    urls.filter(u => u.active && u.type === type).forEach((urlObj) => {
-      visitWebsite(urlObj.url, urlObj.type).catch(() => {});
-    });
-  });
-});
-
-// 每个定时网站独立保存下一次执行时间；最小/最大间隔单位为分钟。
-let scheduledCheckInterval = null;
-const SCHEDULE_CHECK_MS = 5000;
-const DEFAULT_MIN_INTERVAL_MINUTES = 2;
+// 每个网站独立调度；不再使用固定 Cron 访问周期或凌晨暂停规则。
+const inFlightUrls = new Set();
+const MIN_INTERVAL_MINUTES = 1;
 const DEFAULT_MAX_INTERVAL_MINUTES = 10;
 
-function randomIntervalMs(urlObj) {
-  const min = Math.max(1, Number(urlObj.minIntervalMinutes) || DEFAULT_MIN_INTERVAL_MINUTES);
-  const max = Math.max(min, Number(urlObj.maxIntervalMinutes) || DEFAULT_MAX_INTERVAL_MINUTES);
-  return (min + Math.random() * (max - min)) * 60 * 1000;
+function allUrlRecords() {
+  return [...urls, ...scheduledUrls];
 }
 
-function scheduleNextVisit(urlObj, fromNow = true) {
-  urlObj.nextRunAt = Date.now() + (fromNow ? randomIntervalMs(urlObj) : 0);
+function maxIntervalOf(urlObj) {
+  const value = Number(urlObj.maxIntervalMinutes);
+  return Number.isFinite(value) ? Math.max(1, Math.min(10080, Math.floor(value))) : DEFAULT_MAX_INTERVAL_MINUTES;
 }
 
-async function runScheduledVisit(urlObj) {
-  if (urlObj.running) return;
-  urlObj.running = true;
-  try {
-    await visitWebsite(urlObj.url, 'scheduled');
-  } catch (_) {
-    // 单个网站失败不影响其他网站调度。
-  } finally {
-    // 访问完成后才为该网站生成下一次随机时间。
-    scheduleNextVisit(urlObj);
-    urlObj.running = false;
-    saveUrlsData();
+function scheduleNext(urlObj, fromTime = Date.now()) {
+  const max = maxIntervalOf(urlObj);
+  // 以分钟为单位均匀随机选择 1..max，避免固定周期触发。
+  const waitMinutes = MIN_INTERVAL_MINUTES + Math.floor(Math.random() * max);
+  nextRunAt.set(String(urlObj.id), fromTime + waitMinutes * 60 * 1000);
+  urlObj.maxIntervalMinutes = max;
+  return waitMinutes;
+}
+
+function rescheduleAll() {
+  const liveIds = new Set(allUrlRecords().map(u => String(u.id)));
+  for (const id of nextRunAt.keys()) if (!liveIds.has(id)) nextRunAt.delete(id);
+  for (const urlObj of allUrlRecords()) {
+    if (!urlObj.active) { nextRunAt.delete(String(urlObj.id)); continue; }
+    if (!nextRunAt.has(String(urlObj.id))) scheduleNext(urlObj);
   }
 }
 
-function checkAndSetTimer() {
-  const currentHour = moment().tz('Asia/Hong_Kong').hour();
-  const pauseWindow = currentHour >= 1 && currentHour < 6;
-  if (pauseWindow) return;
-
+async function runDueVisits() {
   const now = Date.now();
-  scheduledUrls.filter(u => u.active).forEach(urlObj => {
-    if (!Number.isFinite(Number(urlObj.nextRunAt))) scheduleNextVisit(urlObj);
-    if (!urlObj.running && now >= Number(urlObj.nextRunAt)) {
-      runScheduledVisit(urlObj);
-    }
-  });
+  for (const urlObj of allUrlRecords()) {
+    const id = String(urlObj.id);
+    if (!urlObj.active || inFlightUrls.has(id)) continue;
+    if (!nextRunAt.has(id)) scheduleNext(urlObj);
+    if (nextRunAt.get(id) > now) continue;
+    inFlightUrls.add(id);
+    // 先移除到期时间，防止检查器重复触发；访问完成后再随机安排。
+    nextRunAt.delete(id);
+    Promise.resolve()
+      .then(() => visitWebsite(urlObj.url, 'random'))
+      .catch(error => console.error(`访问失败 ${urlObj.url}:`, error.message))
+      .finally(() => {
+        inFlightUrls.delete(id);
+        const stillExists = allUrlRecords().find(u => String(u.id) === id);
+        if (stillExists && stillExists.active) {
+          scheduleNext(stillExists);
+          saveUrlsData();
+        }
+      });
+  }
 }
 
-scheduledCheckInterval = setInterval(checkAndSetTimer, SCHEDULE_CHECK_MS);
-checkAndSetTimer();
+// 持久化下一次触发时间，进程重启后恢复剩余等待时间。
+function restoreSchedules() {
+  const now = Date.now();
+  for (const urlObj of allUrlRecords()) {
+    urlObj.maxIntervalMinutes = maxIntervalOf(urlObj);
+    if (!urlObj.active) continue;
+    const saved = Number(urlObj.nextRunAt);
+    nextRunAt.set(String(urlObj.id), Number.isFinite(saved) && saved > now ? saved : now + (MIN_INTERVAL_MINUTES + Math.floor(Math.random() * urlObj.maxIntervalMinutes)) * 60000);
+  }
+}
+
+restoreSchedules();
+setInterval(runDueVisits, 1000);
 
 function requireAuth(req, res, next) {
   if (req.session.authenticated) {
@@ -414,11 +418,10 @@ app.get('/api/urls', requireAuth, (req, res) => {
 });
 
 app.post('/api/urls', requireAuth, (req, res) => {
-  const { url, name, type } = req.body;
-  const minIntervalMinutes = Math.max(1, Number(req.body.minIntervalMinutes) || DEFAULT_MIN_INTERVAL_MINUTES);
-  const maxIntervalMinutes = Math.max(minIntervalMinutes, Number(req.body.maxIntervalMinutes) || DEFAULT_MAX_INTERVAL_MINUTES);
+  const { url, name, maxIntervalMinutes = DEFAULT_MAX_INTERVAL_MINUTES, active = true } = req.body;
+  const type = 'random';
 
-  if (!url || !name || !type) {
+  if (!url || !name) {
     return res.status(400).json({ error: '缺少必要参数' });
   }
 
@@ -427,18 +430,12 @@ app.post('/api/urls', requireAuth, (req, res) => {
     url: url,
     name: name,
     type: type,
-    active: true,
-    minIntervalMinutes,
-    maxIntervalMinutes,
-    nextRunAt: Date.now() + (minIntervalMinutes + Math.random() * (maxIntervalMinutes - minIntervalMinutes)) * 60000
+    maxIntervalMinutes: Math.max(1, Math.min(10080, Math.floor(Number(maxIntervalMinutes) || DEFAULT_MAX_INTERVAL_MINUTES))),
+    active: Boolean(active)
   };
 
-  if (is24hType(type)) {
-    urls.push(newUrl);
-  } else if (type === 'scheduled') {
-    scheduledUrls.push(newUrl);
-  }
-
+  urls.push(newUrl);
+  scheduleNext(newUrl);
   saveUrlsData();
 
   res.json({ success: true, url: newUrl });
@@ -455,11 +452,10 @@ app.post('/api/urls/batch', requireAuth, (req, res) => {
   const errors = [];
 
   for (const urlData of urlList) {
-    const { url, name, type, active = true } = urlData;
-    const minIntervalMinutes = Math.max(1, Number(urlData.minIntervalMinutes) || DEFAULT_MIN_INTERVAL_MINUTES);
-    const maxIntervalMinutes = Math.max(minIntervalMinutes, Number(urlData.maxIntervalMinutes) || DEFAULT_MAX_INTERVAL_MINUTES);
+    const { url, name, maxIntervalMinutes = DEFAULT_MAX_INTERVAL_MINUTES, active = true } = urlData;
+    const type = 'random';
 
-    if (!url || !name || !type) {
+    if (!url || !name) {
       errors.push(`URL数据不完整: ${JSON.stringify(urlData)}`);
       continue;
     }
@@ -469,18 +465,12 @@ app.post('/api/urls/batch', requireAuth, (req, res) => {
       url: url,
       name: name,
       type: type,
-      active: active,
-      minIntervalMinutes,
-      maxIntervalMinutes,
-      nextRunAt: Date.now() + (minIntervalMinutes + Math.random() * (maxIntervalMinutes - minIntervalMinutes)) * 60000
+      maxIntervalMinutes: Math.max(1, Math.min(10080, Math.floor(Number(maxIntervalMinutes) || DEFAULT_MAX_INTERVAL_MINUTES))),
+      active: active
     };
 
-    if (is24hType(type)) {
-      urls.push(newUrl);
-    } else if (type === 'scheduled') {
-      scheduledUrls.push(newUrl);
-    }
-
+    urls.push(newUrl);
+    if (newUrl.active) scheduleNext(newUrl);
     addedUrls.push(newUrl);
   }
 
@@ -507,6 +497,7 @@ app.delete('/api/urls/:id', requireAuth, (req, res) => {
   const beforeCount = urls.length + scheduledUrls.length;
   urls = urls.filter(u => u.id !== id);
   scheduledUrls = scheduledUrls.filter(u => u.id !== id);
+  nextRunAt.delete(String(id));
 
   if (urls.length + scheduledUrls.length === beforeCount) {
     return res.status(404).json({ error: 'URL不存在' });
@@ -532,6 +523,7 @@ app.put('/api/urls/:id', requireAuth, (req, res) => {
   }
 
   if (url) {
+    if (url.active) scheduleNext(url); else nextRunAt.delete(String(id));
     saveUrlsData();
     res.json({ success: true, url: url });
   } else {
@@ -540,51 +532,20 @@ app.put('/api/urls/:id', requireAuth, (req, res) => {
 });
 
 app.put('/api/urls/:id/edit', requireAuth, (req, res) => {
-  const id = parseInt(req.params.id);
-  const { url: newUrl, name, type } = req.body;
-
-  if (!newUrl || !name || !type) {
-    return res.status(400).json({ error: '缺少必要参数' });
-  }
-
-  let url = urls.find(u => u.id === id);
-
-  if (url) {
-    if (url.type !== type) {
-      urls = urls.filter(u => u.id !== id);
-      if (is24hType(type)) {
-        urls.push({ ...url, url: newUrl, name, type });
-      } else {
-        scheduledUrls.push({ ...url, url: newUrl, name, type });
-      }
-    } else {
-      url.url = newUrl;
-      url.name = name;
-    }
-  } else {
-    url = scheduledUrls.find(u => u.id === id);
-
-    if (url) {
-      if (url.type !== type) {
-        scheduledUrls = scheduledUrls.filter(u => u.id !== id);
-        if (is24hType(type)) {
-          urls.push({ ...url, url: newUrl, name, type });
-        } else {
-          scheduledUrls.push({ ...url, url: newUrl, name, type });
-        }
-      } else {
-        url.url = newUrl;
-        url.name = name;
-      }
-    }
-  }
-
-  if (url) {
-    saveUrlsData();
-    res.json({ success: true, url: url });
-  } else {
-    res.status(404).json({ error: 'URL不存在' });
-  }
+  const id = parseInt(req.params.id, 10);
+  const { url: newUrl, name, maxIntervalMinutes = DEFAULT_MAX_INTERVAL_MINUTES, active } = req.body;
+  if (!newUrl || !name) return res.status(400).json({ error: '缺少必要参数' });
+  let record = allUrlRecords().find(item => item.id === id);
+  if (!record) return res.status(404).json({ error: 'URL不存在' });
+  record.url = newUrl;
+  record.name = name;
+  record.type = 'random';
+  record.maxIntervalMinutes = Math.max(1, Math.min(10080, Math.floor(Number(maxIntervalMinutes) || DEFAULT_MAX_INTERVAL_MINUTES)));
+  if (typeof active === 'boolean') record.active = active;
+  nextRunAt.delete(String(id));
+  if (record.active) scheduleNext(record);
+  saveUrlsData();
+  res.json({ success: true, url: record });
 });
 
 app.get('/api/logs', requireAuth, (req, res) => {

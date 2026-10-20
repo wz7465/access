@@ -163,14 +163,8 @@
                                     </div>
                                     <div class="input-group">
                                         <label for="accessMode">访问模式</label>
-                                        <select id="accessMode" required>
-                                            <option value="24h_2m">24小时访问(每2分钟)</option>
-                                            <option value="24h_5m">24小时访问(每5分钟)</option>
-                                            <option value="24h_10m">24小时访问(每10分钟)</option>
-                                            <option value="24h_30m">24小时访问(每30分钟)</option>
-                                            <option value="24h_1h">24小时访问(每1小时)</option>
-                                            <option value="scheduled">定时访问(每2分钟,1:00-6:00暂停)</option>
-                                        </select>
+                                        <input type="number" id="accessMode" min="1" max="10080" step="1" value="10" required>
+                                        <small>每次访问完成后，随机等待 1 分钟至该最大值；全天运行。</small>
                                     </div>
                                 </div>
                                 <div class="form-row">
@@ -186,17 +180,6 @@
                                         </label>
                                     </div>
                                 </div>
-                                <div class="form-row">
-                                    <div class="input-group">
-                                        <label for="minIntervalMinutes">随机间隔最小值（分钟）</label>
-                                        <input type="number" id="minIntervalMinutes" min="1" step="1" value="2" required>
-                                    </div>
-                                    <div class="input-group">
-                                        <label for="maxIntervalMinutes">随机间隔最大值（分钟）</label>
-                                        <input type="number" id="maxIntervalMinutes" min="1" step="1" value="10" required>
-                                    </div>
-                                </div>
-                                <small>仅用于“定时访问”；每个网站独立随机，最大值可自行设置。</small>
                                 <div class="form-actions">
                                     <button type="button" class="btn btn-secondary" id="cancelAddBtn">取消</button>
                                     <button type="submit" class="btn btn-primary"><i class="fas fa-floppy-disk"></i> 保存</button>
@@ -213,15 +196,8 @@
                                     </div>
                                     <div class="input-group">
                                         <label for="batchAccessMode">访问模式</label>
-                                        <select id="batchAccessMode" required>
-                                            <option value="24h_2m">24小时访问(每2分钟)</option>
-                                            <option value="24h_5m">24小时访问(每5分钟)</option>
-                                            <option value="24h_10m">24小时访问(每10分钟)</option>
-                                            <option value="24h_30m">24小时访问(每30分钟)</option>
-                                            <option value="24h_1h">24小时访问(每1小时)</option>
-                                            <option value="scheduled">定时访问(每2分钟,1:00-6:00暂停)</option>
-                                        </select>
-                                        <small>批量设置所有URL的访问模式</small>
+                                        <input type="number" id="batchAccessMode" min="1" max="10080" step="1" value="10" required>
+                                        <small>批量设置所有URL的最大随机间隔；每个网站独立随机等待 1～最大值分钟。</small>
                                     </div>
                                 </div>
                                 <div class="form-row">
@@ -239,17 +215,6 @@
                                         </button>
                                     </div>
                                 </div>
-                                <div class="form-row">
-                                    <div class="input-group">
-                                        <label for="batchMinIntervalMinutes">随机间隔最小值（分钟）</label>
-                                        <input type="number" id="batchMinIntervalMinutes" min="1" step="1" value="2" required>
-                                    </div>
-                                    <div class="input-group">
-                                        <label for="batchMaxIntervalMinutes">随机间隔最大值（分钟）</label>
-                                        <input type="number" id="batchMaxIntervalMinutes" min="1" step="1" value="10" required>
-                                    </div>
-                                </div>
-                                <small>仅用于“定时访问”；批量添加的网站各自独立随机。</small>
                                 <div class="form-actions">
                                     <button type="button" class="btn btn-secondary" id="cancelAddBtn2">取消</button>
                                     <button type="submit" class="btn btn-primary"><i class="fas fa-floppy-disk"></i> 批量保存</button>
@@ -482,14 +447,8 @@
                         </div>
                         <div class="input-group">
                             <label for="editAccessMode">访问模式</label>
-                            <select id="editAccessMode" required>
-                                <option value="24h_2m">24小时访问(每2分钟)</option>
-                                <option value="24h_5m">24小时访问(每5分钟)</option>
-                                <option value="24h_10m">24小时访问(每10分钟)</option>
-                                <option value="24h_30m">24小时访问(每30分钟)</option>
-                                <option value="24h_1h">24小时访问(每1小时)</option>
-                                <option value="scheduled">定时访问(每2分钟,1:00-6:00暂停)</option>
-                            </select>
+                            <input type="number" id="editAccessMode" min="1" max="10080" step="1" value="10" required>
+                                <small>每次访问完成后，随机等待 1 分钟至该最大值；全天运行。</small>
                         </div>
                     </div>
                     <div class="form-row">

@@ -52,10 +52,10 @@ class ApiClient {
         return this.request('/api/urls');
     }
 
-    async addUrl(url, name, type, minIntervalMinutes, maxIntervalMinutes) {
+    async addUrl(url, name, maxIntervalMinutes, active = true) {
         return this.request('/api/urls', {
             method: 'POST',
-            body: { url, name, type, minIntervalMinutes, maxIntervalMinutes }
+            body: { url, name, maxIntervalMinutes: Number(maxIntervalMinutes), active }
         });
     }
 
@@ -79,10 +79,10 @@ class ApiClient {
         });
     }
 
-    async editUrl(id, url, name, type) {
+    async editUrl(id, url, name, maxIntervalMinutes, active) {
         return this.request(`/api/urls/${id}/edit`, {
             method: 'PUT',
-            body: { url, name, type }
+            body: { url, name, maxIntervalMinutes: Number(maxIntervalMinutes), active }
         });
     }
 
@@ -477,6 +477,11 @@ class AppState {
         document.getElementById('addUrlForm').style.display = 'none';
         document.getElementById('urlForm').reset();
         document.getElementById('enabledInput').checked = true;
+        this.currentEditUrlId = null;
+        const heading = document.querySelector('#addUrlForm .form-card h3');
+        if (heading) heading.innerHTML = '<i class="fas fa-circle-plus"></i> 添加新URL';
+        const submit = document.querySelector('#urlForm button[type="submit"]');
+        if (submit) submit.innerHTML = '<i class="fas fa-floppy-disk"></i> 保存';
     }
 
     async handleUrlSubmit(e) {
@@ -494,31 +499,24 @@ class AppState {
 
         try {
             // 根据选择的访问模式确定类型
-            const type = accessMode.value;
+            const maxIntervalMinutes = Number(accessMode.value);
             
             console.log('提交URL数据:', {
                 url: urlInput.value.trim(),
                 name: descriptionInput.value.trim() || 'URL',
-                type: type
+                maxIntervalMinutes: maxIntervalMinutes
             });
             
-            const minIntervalMinutes = Number(document.getElementById('minIntervalMinutes').value);
-            const maxIntervalMinutes = Number(document.getElementById('maxIntervalMinutes').value);
-            if (!Number.isInteger(minIntervalMinutes) || minIntervalMinutes < 1 ||
-                !Number.isInteger(maxIntervalMinutes) || maxIntervalMinutes < minIntervalMinutes) {
-                throw new Error('随机间隔必须为正整数，且最大值不能小于最小值');
+            if (this.currentEditUrlId) {
+                await this.api.editUrl(this.currentEditUrlId, urlInput.value.trim(), descriptionInput.value.trim() || 'URL', maxIntervalMinutes, enabledInput.checked);
+            } else {
+                await this.api.addUrl(urlInput.value.trim(), descriptionInput.value.trim() || 'URL', maxIntervalMinutes, enabledInput.checked);
             }
-            await this.api.addUrl(
-                urlInput.value.trim(),
-                descriptionInput.value.trim() || 'URL',
-                type,
-                minIntervalMinutes,
-                maxIntervalMinutes
-            );
             
-            await this.loadData(); // 重新加载数据
+            await this.loadData();
+            const wasEditing = Boolean(this.currentEditUrlId);
             this.hideAddUrlForm();
-            this.showNotification('success', 'URL添加成功');
+            this.showNotification('success', wasEditing ? 'URL编辑成功' : 'URL添加成功');
         } catch (error) {
             console.error('添加URL失败:', error);
             this.showNotification('error', '添加失败: ' + error.message);
@@ -611,7 +609,7 @@ class AppState {
                             <span class="detail-value">
                                 <span class="mode-badge ${url.type === 'scheduled' ? 'mode-scheduled' : 'mode-24h'}">
                                     <i class="fas fa-${url.type === 'scheduled' ? 'calendar-alt' : 'clock'}"></i>
-                                    ${this.getModeLabel(url.type)}
+                                    随机访问（最大 ${Number(url.maxIntervalMinutes) || 10} 分钟）
                                 </span>
                             </span>
                         </div>
@@ -636,15 +634,7 @@ class AppState {
 
     // 模式type -> 显示名（与后端 getModeLabel 保持一致）
     getModeLabel(type) {
-        const labels = {
-            '24h_2m': '24小时(每2分钟)',
-            '24h_5m': '24小时(每5分钟)',
-            '24h_10m': '24小时(每10分钟)',
-            '24h_30m': '24小时(每30分钟)',
-            '24h_1h': '24小时(每1小时)',
-            'scheduled': '定时随机间隔(1:00-6:00暂停)'
-        };
-        return labels[type] || type;
+        return '全天随机访问';
     }
 
     async refreshLogs() {
@@ -953,15 +943,8 @@ class AppState {
 
     previewBatchUrls() {
         const batchUrlsInput = document.getElementById('batchUrlsInput').value.trim();
-        const batchAccessMode = document.getElementById('batchAccessMode').value;
+        const batchAccessMode = Number(document.getElementById('batchAccessMode').value);
         const batchEnabled = document.getElementById('batchEnabledInput').checked;
-        const minIntervalMinutes = Number(document.getElementById('batchMinIntervalMinutes').value);
-        const maxIntervalMinutes = Number(document.getElementById('batchMaxIntervalMinutes').value);
-        if (!Number.isInteger(minIntervalMinutes) || minIntervalMinutes < 1 ||
-            !Number.isInteger(maxIntervalMinutes) || maxIntervalMinutes < minIntervalMinutes) {
-            this.showNotification('error', '随机间隔必须为正整数，且最大值不能小于最小值');
-            return;
-        }
         
         if (!batchUrlsInput) {
             this.showNotification('error', '请输入要批量添加的URL');
@@ -974,7 +957,7 @@ class AppState {
             return;
         }
         
-        this.showPreviewModal(urls, batchAccessMode, batchEnabled, minIntervalMinutes, maxIntervalMinutes);
+        this.showPreviewModal(urls, batchAccessMode, batchEnabled);
     }
 
     parseBatchUrls(input) {
@@ -1013,12 +996,12 @@ class AppState {
         return urls;
     }
 
-    showPreviewModal(urls, accessMode, enabled, minIntervalMinutes = 2, maxIntervalMinutes = 10) {
+    showPreviewModal(urls, accessMode, enabled) {
         const modal = document.getElementById('previewModal');
         const previewContent = document.getElementById('previewContent');
         
         // 存储预览数据
-        this.previewData = { urls, accessMode, enabled, minIntervalMinutes, maxIntervalMinutes };
+        this.previewData = { urls, accessMode, enabled };
         
         // 生成预览内容
         let html = `<div class="preview-summary">即将添加 ${urls.length} 个URL</div>`;
@@ -1029,14 +1012,7 @@ class AppState {
                     <div class="preview-url">${item.url}</div>
                     <div class="preview-name">名称: ${item.name}</div>
                     ${item.description ? `<div class="preview-description">备注: ${item.description}</div>` : ''}
-                    <div class="preview-mode">${{
-                        '24h_2m': '24小时访问(每2分钟)',
-                        '24h_5m': '24小时访问(每5分钟)',
-                        '24h_10m': '24小时访问(每10分钟)',
-                        '24h_30m': '24小时访问(每30分钟)',
-                        '24h_1h': '24小时访问(每1小时)',
-                        'scheduled': '定时随机间隔(1:00-6:00暂停)'
-                    }[accessMode] || accessMode}</div>
+                    <div class="preview-mode">最大随机间隔：${accessMode} 分钟</div>
                 </div>
             `;
         });
@@ -1056,7 +1032,7 @@ class AppState {
             return;
         }
         
-        const { urls, accessMode, enabled, minIntervalMinutes, maxIntervalMinutes } = this.previewData;
+        const { urls, accessMode, enabled } = this.previewData;
         const submitBtn = document.getElementById('previewConfirm');
         
         // 显示加载状态
@@ -1068,10 +1044,8 @@ class AppState {
             const batchData = urls.map(item => ({
                 url: item.url,
                 name: item.name,
-                type: accessMode,
-                active: enabled,
-                minIntervalMinutes,
-                maxIntervalMinutes
+                maxIntervalMinutes: accessMode,
+                active: enabled
             }));
             
             await this.api.addBatchUrls(batchData);
@@ -1279,25 +1253,24 @@ class AppState {
 
     // 编辑URL相关方法
     editUrl(id) {
-        // 找到要编辑的URL
         const allUrls = [...this.urls24h, ...this.urlsScheduled];
         const url = allUrls.find(u => u.id === id);
-        
         if (!url) {
             this.showNotification('error', 'URL不存在');
             return;
         }
-
-        // 填充编辑表单
-        document.getElementById('editUrlInput').value = url.url;
-        document.getElementById('editAccessMode').value = url.type;
-        document.getElementById('editDescriptionInput').value = url.name || '';
-
-        // 存储当前编辑的URL ID
         this.currentEditUrlId = id;
-
-        // 显示编辑模态框
-        this.showEditUrlModal();
+        document.getElementById('addUrlForm').style.display = 'block';
+        document.getElementById('urlInput').value = url.url || '';
+        document.getElementById('accessMode').value = Number(url.maxIntervalMinutes) || 10;
+        document.getElementById('descriptionInput').value = url.name || '';
+        document.getElementById('enabledInput').checked = url.active !== false;
+        const heading = document.querySelector('#addUrlForm .form-card h3');
+        if (heading) heading.innerHTML = '<i class="fas fa-pen-to-square"></i> 编辑URL';
+        const submit = document.querySelector('#urlForm button[type="submit"]');
+        if (submit) submit.innerHTML = '<i class="fas fa-floppy-disk"></i> 保存修改';
+        document.getElementById('urlInput').focus();
+        document.getElementById('addUrlForm').scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
     showEditUrlModal() {
@@ -1322,7 +1295,7 @@ class AppState {
         }
 
         const url = document.getElementById('editUrlInput').value.trim();
-        const type = document.getElementById('editAccessMode').value;
+        const maxIntervalMinutes = Number(document.getElementById('editAccessMode').value);
         const name = document.getElementById('editDescriptionInput').value.trim();
 
         if (!url) {
@@ -1336,7 +1309,7 @@ class AppState {
         }
 
         try {
-            await this.api.editUrl(this.currentEditUrlId, url, name, type);
+            await this.api.editUrl(this.currentEditUrlId, url, name, maxIntervalMinutes, this.currentEditUrlActive);
             this.showNotification('success', 'URL编辑成功');
             
             // 刷新URL列表
