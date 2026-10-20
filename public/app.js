@@ -493,13 +493,30 @@ class AppState {
         const enabledInput = document.getElementById('enabledInput');
         const submitBtn = e.target.querySelector('button[type="submit"]');
 
+        // 在读取 value 前检查表单元素，避免 DOM/缓存版本不一致时出现模糊的 null.value 错误。
+        const missingFields = [];
+        if (!urlInput) missingFields.push('urlInput');
+        if (!accessMode) missingFields.push('accessMode');
+        if (!descriptionInput) missingFields.push('descriptionInput');
+        if (!enabledInput) missingFields.push('enabledInput');
+        if (!submitBtn) missingFields.push('urlForm submit button');
+        if (missingFields.length) {
+            console.error('URL表单缺少必要元素:', missingFields);
+            this.showNotification('error', '表单组件不完整：' + missingFields.join(', ') + '。请强制刷新页面后重试。');
+            return;
+        }
+
         // 显示加载状态
         submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 保存中...';
         submitBtn.disabled = true;
 
         try {
-            // 根据选择的访问模式确定类型
+            // 最大随机间隔（分钟）
             const maxIntervalMinutes = Number(accessMode.value);
+            if (!Number.isInteger(maxIntervalMinutes) || maxIntervalMinutes < 1 || maxIntervalMinutes > 10080) {
+                throw new Error('最大随机间隔必须是 1～10080 分钟之间的整数');
+            }
+            if (!urlInput.value.trim()) throw new Error('请输入URL地址');
             
             console.log('提交URL数据:', {
                 url: urlInput.value.trim(),
